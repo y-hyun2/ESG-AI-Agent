@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 
 const AGENTS = [
@@ -10,9 +10,19 @@ const AGENTS = [
 ]
 
 export default function AgentWorkspace() {
-    const [activeTab, setActiveTab] = useState('regulation')
-    const [agentOutput, setAgentOutput] = useState('')
+    // Initialize state from localStorage if available
+    const [activeTab, setActiveTab] = useState(() => localStorage.getItem('esg_active_tab') || 'regulation')
+    const [agentOutput, setAgentOutput] = useState(() => localStorage.getItem('esg_agent_output') || '')
     const [isLoading, setIsLoading] = useState(false)
+
+    // Persist state changes
+    useEffect(() => {
+        localStorage.setItem('esg_active_tab', activeTab)
+    }, [activeTab])
+
+    useEffect(() => {
+        localStorage.setItem('esg_agent_output', agentOutput)
+    }, [agentOutput])
 
     const handleRunAgent = async () => {
         setIsLoading(true)
@@ -41,8 +51,8 @@ export default function AgentWorkspace() {
                         key={agent.id}
                         onClick={() => setActiveTab(agent.id)}
                         className={`px-4 py-3 text-sm font-medium focus:outline-none ${activeTab === agent.id
-                                ? 'border-b-2 border-blue-500 text-blue-600'
-                                : 'text-gray-500 hover:text-gray-700'
+                            ? 'border-b-2 border-blue-500 text-blue-600'
+                            : 'text-gray-500 hover:text-gray-700'
                             }`}
                     >
                         {agent.name}
@@ -72,7 +82,15 @@ export default function AgentWorkspace() {
                         </div>
                     ) : agentOutput ? (
                         <div className="prose max-w-none">
-                            <ReactMarkdown>{agentOutput}</ReactMarkdown>
+                            <ReactMarkdown
+                                components={{
+                                    a: ({ node, ...props }) => (
+                                        <a {...props} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline" />
+                                    )
+                                }}
+                            >
+                                {agentOutput}
+                            </ReactMarkdown>
                         </div>
                     ) : (
                         <div className="text-center text-gray-400 mt-20">
