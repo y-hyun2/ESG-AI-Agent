@@ -126,13 +126,8 @@ AI-powered ESG Policy Analysis, Risk Diagnostics & Automated Reporting System
 pip install -r requirements.txt
 
 
-### 2) Backend 실행
-uvicorn backend.main:app --reload
-
-
-### 3) Frontend 실행
-react run frontend/app.py
-
+### 2) 전체실행 방법
+./run_app.sh
 
 ---
 
