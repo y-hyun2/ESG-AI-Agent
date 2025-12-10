@@ -20,6 +20,7 @@ import subprocess
 import os
 import json
 from typing import Any, Dict, List, Optional
+from datetime import datetime
 from .esg_report_generator import generate_esg_report
 
 class DataLoader:
@@ -396,3 +397,23 @@ class ReportTool:
                     raise
         
         return report_html
+
+
+def generate_report_from_query(query: str, audience: Optional[str] = None, extra_data: Optional[Dict[str, Any]] = None) -> str:
+    """최소 필수 필드를 채워 HTML ESG 보고서를 생성한다."""
+
+    tool = ReportTool()
+    base = {
+        "company_name": "협력사 ESG 리포트",
+        "report_year": datetime.now().year,
+        "ceo_message": f"요청 요약: {query}",
+        "esg_strategy": "환경·사회·거버넌스 전 영역을 통합 관리합니다.",
+        "env_policy": "탄소 감축과 자원 순환을 위한 실행계획",
+        "social_policy": "근로자 안전·인권 보호 및 지역사회 기여",
+        "gov_structure": "투명 거버넌스와 윤리 위원회를 통한 감독",
+        "audience": audience or "일반 이해관계자",
+    }
+    tool.store_data(base)
+    if extra_data:
+        tool.store_data(extra_data)
+    return tool.create_report()
