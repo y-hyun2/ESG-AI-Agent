@@ -23,15 +23,27 @@ from src.tools.policy.prompts.recommender_prompts import RECOMMEND_PROMPT
 # -----------------------------
 # 임베딩 및 벡터 DB
 # -----------------------------
-embedding_model = HuggingFaceEmbeddings(model_name="BAAI/bge-m3")
+# -----------------------------
+# 임베딩 및 벡터 DB (Lazy Load)
+# -----------------------------
+_retriever = None
 
-vectordb = Chroma(
-    persist_directory="vector_db/esg_all",
-    embedding_function=embedding_model,
-    collection_name="esg_all"
-)
-
-retriever = vectordb.as_retriever(search_kwargs={"k": 5})
+def get_retriever():
+    global _retriever
+    if _retriever is None:
+        try:
+            print("⚙️ [PolicyTool] Loading Embeddings & VectorDB...")
+            embedding_model = HuggingFaceEmbeddings(model_name="BAAI/bge-m3")
+            vectordb = Chroma(
+                persist_directory="vector_db/esg_all",
+                embedding_function=embedding_model,
+                collection_name="esg_all"
+            )
+            _retriever = vectordb.as_retriever(search_kwargs={"k": 5})
+        except Exception as e:
+            print(f"❌ [PolicyTool] Initialization failed: {e}")
+            raise
+    return _retriever
 
 
 
@@ -43,6 +55,7 @@ class PolicySummarizer:
         self.llm = ChatOpenAI(model="gpt-4o-mini")
 
     def summarize(self, text: str):
+        retriever = get_retriever()
         related_docs = retriever.invoke(text)
         context = "\n\n".join([d.page_content for d in related_docs])
 
@@ -59,6 +72,7 @@ class PolicyComparator:
         self.llm = ChatOpenAI(model="gpt-4o-mini")
 
     def compare(self, a: str, b: str):
+        retriever = get_retriever()
         context_a = retriever.invoke(a)
         context_b = retriever.invoke(b)
 
@@ -167,6 +181,27 @@ class PolicyTool:
 
         return base_info + "\n\n" + result
 
+    def _normalize_state(self, data: Any) -> dict:
+        """허용된 입력(str 또는 dict)을 LangGraph 상태 형태로 변환"""
+        if isinstance(data, str):
+            return {"query": data}
+        if isinstance(data, dict):
+            if "query" not in data:
+                raise ValueError("PolicyTool 상태에는 'query' 키가 필요합니다.")
+            return data
+        raise TypeError("PolicyTool 입력은 문자열 또는 {'query': str} 형태여야 합니다.")
 
+    def __call__(self, data: Any) -> str:
+        state = self._normalize_state(data)
+        return self.run(state)
+
+    def invoke(self, data: Any, *, config: Any | None = None) -> str:
+        # LangChain 호환을 위해 config 인자를 허용하지만 현재는 미사용
+        return self.__call__(data)
+
+        
 # Graph/LangGraph에서 import할 실제 인스턴스
-policy_tool = PolicyTool()
+policy_guideline_tool = PolicyTool()
+
+# 하위 호환성을 위해 이전 이름도 유지
+policy_tool = policy_guideline_tool
