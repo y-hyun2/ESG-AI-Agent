@@ -205,6 +205,7 @@ async def chat_stream(request: ChatRequest):
         """
 
         llm = ChatOpenAI(model="gpt-4o", temperature=0.5, streaming=True)
+        
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=request.query)
