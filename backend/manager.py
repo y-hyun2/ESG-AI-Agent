@@ -4,6 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
+from pathlib import Path
 
 # Add project root to sys.path to allow importing src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -14,10 +15,16 @@ from src.tools.policy_tool import policy_guideline_tool
 from src.tools.report_tool import draft_report
 from src.workflows.custom_graph import run_langgraph_pipeline
 from backend.kv_store import kv_store
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 LOGGER = logging.getLogger(__name__)
+CONVERSATION_VECTOR_DIR = Path("vector_db/conversations")
+
+
 class AgentManager:
     DEFAULT_TITLE = "새 대화"
 
@@ -43,6 +50,11 @@ class AgentManager:
         
         self.shared_context = default_context
         self._risk_orchestrator = RiskToolOrchestrator()
+        CONVERSATION_VECTOR_DIR.mkdir(parents=True, exist_ok=True)
+        # 업로드 파일용 임베딩/텍스트 분할기 (벡터DB에 재사용)
+        # 업로드 파일을 Chroma에 넣기 위한 임베딩/청크 분리기
+        self._conv_embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-m3")
+        self._conv_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
         self._title_llm: Optional[ChatOpenAI] = None
 
     def get_context(self) -> Dict[str, Any]:
@@ -91,6 +103,7 @@ class AgentManager:
             "title": title or self.DEFAULT_TITLE,
             "messages": [],
             "files": [],
+            "reports": [],
             "created_at": now,
             "updated_at": now,
         }
@@ -178,7 +191,35 @@ class AgentManager:
             uploaded = uploaded[-50:]
         self.shared_context["uploaded_files"] = uploaded
         conversation["updated_at"] = self._now()
+        # 대화방 전용 Chroma에 즉시 임베딩 upsert
+        try:
+            self._upsert_conversation_embeddings(conversation_id, text, filename)
+        except Exception as exc:  # pragma: no cover - 임베딩 실패 시 로그만 남김
+            LOGGER.warning("대화방 임베딩 추가 실패(%s): %s", conversation_id, exc)
         self.update_context("conversations", conversations)
+
+    def add_conversation_report(self, conversation_id: str, report_data: Dict[str, Any]):
+        conversations = self._get_conversations()
+        conversation = conversations.get(conversation_id)
+        if conversation is None:
+            raise KeyError(f"Conversation not found: {conversation_id}")
+        
+        # report_data expected to have id, title, content, creates_at etc. 
+        # If ID is missing, generate one
+        if "id" not in report_data:
+            report_data["id"] = str(uuid.uuid4())
+        if "created_at" not in report_data:
+            report_data["created_at"] = self._now()
+            
+        conversation.setdefault("reports", []).append(report_data)
+        conversation["updated_at"] = self._now()
+        self.update_context("conversations", conversations)
+
+    def list_conversation_reports(self, conversation_id: str) -> List[Dict[str, Any]]:
+        conversation = self.get_conversation(conversation_id)
+        if not conversation:
+            return []
+        return conversation.get("reports", [])
 
     def _guess_conversation_title(self, content: str) -> str:
         """LLM을 사용해 대화 제목을 생성하고 실패 시 간단 요약으로 대체"""
@@ -213,6 +254,49 @@ class AgentManager:
         if not conversation:
             return []
         return conversation.get("files", [])
+
+    def _get_conversation_vector_path(self, conversation_id: str) -> Path:
+        return CONVERSATION_VECTOR_DIR / conversation_id
+
+    def _get_conversation_vectorstore(self, conversation_id: str) -> Chroma:
+        persist_dir = str(self._get_conversation_vector_path(conversation_id))
+        os.makedirs(persist_dir, exist_ok=True)
+        return Chroma(
+            collection_name=f"convo_{conversation_id}",
+            embedding_function=self._conv_embeddings,
+            persist_directory=persist_dir,
+        )
+
+    def _upsert_conversation_embeddings(self, conversation_id: str, text: str, filename: str):
+        """대화방 전용 Chroma 컬렉션에 파일 청크를 업로드"""
+        if not text:
+            return
+        chunks = self._conv_splitter.split_text(text)
+        if not chunks:
+            return
+        vectorstore = self._get_conversation_vectorstore(conversation_id)
+        metadatas = [
+            {
+                "filename": filename,
+                "chunk": idx,
+            }
+            for idx, _ in enumerate(chunks)
+        ]
+        ids = [f"{filename}-{uuid.uuid4()}" for _ in chunks]
+        vectorstore.add_texts(texts=chunks, metadatas=metadatas, ids=ids)
+
+    def retrieve_conversation_snippets(self, conversation_id: str, query: str, k: int = 4) -> List[str]:
+        """대화방별 업로드 문서에서 쿼리와 유사한 청크를 검색"""
+        vector_path = self._get_conversation_vector_path(conversation_id)
+        if not vector_path.exists() or not any(vector_path.iterdir()):
+            return []
+        try:
+            vectorstore = self._get_conversation_vectorstore(conversation_id)
+            docs = vectorstore.similarity_search(query, k=k)
+        except Exception as exc:  # pragma: no cover - 오류 발생 시 빈 컨텍스트 반환
+            LOGGER.warning("대화방 RAG 검색 실패(%s): %s", conversation_id, exc)
+            return []
+        return [f"[파일:{doc.metadata.get('filename')}]{doc.page_content}" for doc in docs]
 
     def _generate_title_with_llm(self, content: str) -> Optional[str]:
         try:
